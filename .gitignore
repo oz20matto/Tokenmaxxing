@@ -1,0 +1,11 @@
+# build products (rebuilt by build.sh)
+Tokenmaxxing.app/
+tools/bin/
+*.o
+*.dSYM/
+
+# macOS
+.DS_Store
+
+# local signing certificate name
+.signing-identity
