@@ -475,13 +475,13 @@ static TMProvider *ollamaHeadlessRead(void) {
     NSString *configured = [NSUserDefaults.standardUserDefaults stringForKey:@"ollamaURL"];
     NSString *base = configured ?: kOllamaDefaultURL;
     NSInteger code = 0;
+    NSDate *before = [NSDate date];
     NSDictionary *bal = httpJSON(@"GET", [base stringByAppendingString:@"/api/balance"], nil, nil, &code);
-    // No HTTP response (refused or timed out): the app is closed. A status keeps its message.
-    // Headless start only when ollamaURL is unset or the default.
-    if (!bal && code == 0) {
-        if (!configured || [configured isEqualToString:kOllamaDefaultURL]) return ollamaHeadlessRead();
-        return failed(@"ollama", @"Ollama", TML(@"Ollama is not running"));
-    }
+    NSTimeInterval took = [[NSDate date] timeIntervalSinceDate:before];
+    // No status in under 3 s is a refused connection (app closed). A hang does not start the fallback.
+    if (!bal && code == 0 && took < 3 && (!configured || [configured isEqualToString:kOllamaDefaultURL]))
+        return ollamaHeadlessRead();
+    if (!bal && code == 0) return failed(@"ollama", @"Ollama", TML(@"Ollama is not running"));
     if (!bal) return failed(@"ollama", @"Ollama", [NSString stringWithFormat:TML(@"Ollama answered %ld (sign in to ollama.com)"), (long)code]);
     NSDictionary *me = httpJSON(@"POST", [base stringByAppendingString:@"/api/me"], nil, nil, NULL);
     id plan = me[@"plan"];
@@ -631,9 +631,8 @@ static const NSTimeInterval kClaudeRefreshWait = 6;
                           kClaudeRefreshWait, kClaudeRefreshNote);
     TMProvider *p = [self parseClaudeTUI:t ?: @"" now:[NSDate date]];
     if (p.windows.count && !p.plan.length) {
-        NSString *dir = NSProcessInfo.processInfo.environment[@"CLAUDE_CONFIG_DIR"];
-        NSString *cfg = dir.length ? [dir.stringByExpandingTildeInPath stringByAppendingPathComponent:@".claude.json"]
-                                   : [@"~/.claude.json" stringByExpandingTildeInPath];
+        // readTUI starts the CLI without CLAUDE_* variables, so it uses ~/.claude.json too.
+        NSString *cfg = [@"~/.claude.json" stringByExpandingTildeInPath];
         NSData *d = [NSData dataWithContentsOfFile:cfg];
         id j = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
         if ([j isKindOfClass:NSDictionary.class]) p.plan = [self claudePlanFromConfig:j];
