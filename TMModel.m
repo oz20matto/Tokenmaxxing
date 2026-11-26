@@ -13,28 +13,81 @@ NSString *TMPct(double v) {
     return TMItalian() ? [s stringByReplacingOccurrencesOfString:@"." withString:@","] : s;
 }
 
+NSInteger TMDayDistance(NSDate *d, NSDate *now);
+BOOL TMDayElides(NSDate *d);
+NSString *TMSpokenWhen(NSDate *d, NSDate *now, BOOL withClock);
+
 static NSString *timeOf(NSDate *d) {
     NSDateFormatter *f = [NSDateFormatter new];
     f.locale = TMLocale();
+    f.timeZone = NSTimeZone.localTimeZone;
     [f setLocalizedDateFormatFromTemplate:@"jmm"];
+    f.timeZone = NSTimeZone.localTimeZone;
     return [f stringFromDate:d];
 }
 
-static NSString *dayOf(NSDate *d) {   // English: "Dec 8"; Italian: "8/12"
+// Month and day names follow the UI language. English keeps the Mac's region
+// (en_IT → "December"); Italian is it_IT. Clocks and numerals stay on TMLocale().
+static NSLocale *nameLocale(void) {
+    if (TMItalian()) return [NSLocale localeWithLocaleIdentifier:@"it_IT"];
+    NSString *region = [NSLocale componentsFromLocaleIdentifier:NSLocale.currentLocale.localeIdentifier][NSLocaleCountryCode];
+    if (!region.length) return [NSLocale localeWithLocaleIdentifier:@"en"];
+    return [NSLocale localeWithLocaleIdentifier:[@"en_" stringByAppendingString:region]];
+}
+
+static NSString *dayOf(NSDate *d) {   // English: "Dec 8" / "8 Dec"; Italian: "8/12"
     if (TMItalian()) {
         NSDateComponents *c = [NSCalendar.currentCalendar components:NSCalendarUnitDay | NSCalendarUnitMonth fromDate:d];
         return [NSString stringWithFormat:@"%ld/%ld", (long)c.day, (long)c.month];
     }
     NSDateFormatter *f = [NSDateFormatter new];
-    f.locale = TMLocale();
+    f.locale = nameLocale();
+    f.timeZone = NSTimeZone.localTimeZone;
     [f setLocalizedDateFormatFromTemplate:@"MMMd"];
+    f.timeZone = NSTimeZone.localTimeZone;
+    return [[f stringFromDate:d] stringByReplacingOccurrencesOfString:@" " withString:@"\u00A0"];
+}
+
+// "8 December" / "8 dicembre" in the UI language. Day first in both.
+// U+00A0 keeps the day and the month on one line.
+static NSString *dayMonth(NSDate *d) {
+    NSDateFormatter *f = [NSDateFormatter new];
+    f.locale = nameLocale();
+    NSCalendar *cal = [NSCalendar.currentCalendar copy];
+    cal.timeZone = NSTimeZone.localTimeZone;
+    f.calendar = cal;
+    f.timeZone = NSTimeZone.localTimeZone;
+    f.dateFormat = @"d\u00A0MMMM";
     return [f stringFromDate:d];
 }
 
-// Italian elides the article before 8 and 11 ("l'8/12", "all'11/12").
-static BOOL elides(NSDate *d) {
+// Whole days from today's local midnight to `d`'s. 0 = today, 1 = tomorrow.
+NSInteger TMDayDistance(NSDate *d, NSDate *now) {
+    if (!d) return NSIntegerMax;
+    NSCalendar *cal = NSCalendar.currentCalendar;
+    NSDate *base = now ?: [NSDate date];
+    return [cal components:NSCalendarUnitDay
+                  fromDate:[cal startOfDayForDate:base]
+                    toDate:[cal startOfDayForDate:d]
+                   options:0].day;
+}
+
+// Italian elides the article before 1, 8 and 11 ("l'1", "l'8", "all'11").
+BOOL TMDayElides(NSDate *d) {
+    if (!d) return NO;
     NSInteger day = [NSCalendar.currentCalendar component:NSCalendarUnitDay fromDate:d];
-    return day == 8 || day == 11;
+    return day == 1 || day == 8 || day == 11;
+}
+
+// Today and tomorrow lead with the clock ("21:40 today", "21:40 di oggi").
+// A later day is "8 December", plus the clock when `withClock` (an exhaustion instant).
+NSString *TMSpokenWhen(NSDate *d, NSDate *now, BOOL withClock) {
+    if (!d) return @"";
+    NSInteger days = TMDayDistance(d, now);
+    if (days == 0) return [NSString stringWithFormat:TML(@"%@ today"), timeOf(d)];
+    if (days == 1) return [NSString stringWithFormat:TML(@"%@ tomorrow"), timeOf(d)];
+    if (!withClock) return dayMonth(d);
+    return [NSString stringWithFormat:@"%@ %@ %@", dayMonth(d), TML(@"at"), timeOf(d)];
 }
 
 NSString *TMWhen(NSDate *d, NSDate *now) {
@@ -46,7 +99,7 @@ NSString *TMWhen(NSDate *d, NSDate *now) {
     BOOL it = TMItalian();
     if (days == 0) return [NSString stringWithFormat:TML(hour >= 18 ? @"tonight at %@" : @"today at %@"), timeOf(d)];
     if (days == 1) return [NSString stringWithFormat:TML(@"tomorrow at %@"), timeOf(d)];
-    NSString *on = it ? (elides(d) ? @"l'" : @"il ") : @"on ";
+    NSString *on = it ? (TMDayElides(d) ? @"l'" : @"il ") : @"on ";
     if (days > 1 && days < 7) return [NSString stringWithFormat:TML(@"%@%@ at %@"), on, dayOf(d), timeOf(d)];
     return [on stringByAppendingString:dayOf(d)];
 }
@@ -56,7 +109,7 @@ NSString *TMUntil(NSDate *d, NSDate *now) {
     BOOL it = TMItalian();
     if ([NSCalendar.currentCalendar isDate:d inSameDayAsDate:now])
         return [(it ? @"fino alle " : @"until ") stringByAppendingString:timeOf(d)];
-    return [(it ? (elides(d) ? @"fino all'" : @"fino al ") : @"until ") stringByAppendingString:dayOf(d)];
+    return [(it ? (TMDayElides(d) ? @"fino all'" : @"fino al ") : @"until ") stringByAppendingString:dayOf(d)];
 }
 
 NSString *TMDuration(NSTimeInterval s) {

@@ -9,6 +9,14 @@ extern double TMAnimationPhase;   // seconds; advanced by the panel while the po
 // NSUserDefaults key. "logo" (default) draws a template mark per subscription; "letter" keeps the initial.
 extern NSString *const TMMenuBarStyleKey;
 
+// Panel wordmark. Defaults to YES; NO hides "TOKENMAXXING" and the meta text starts at the margin.
+extern NSString *const TMShowTitleKey;
+
+// Closed-card header. Each defaults to YES; NO hides that piece. Gaps stay between whatever remains.
+extern NSString *const TMCardShowLogoKey;
+extern NSString *const TMCardShowNameKey;
+extern NSString *const TMCardShowPlanKey;
+
 // One subscription card (Proposta C). Closed card: logo, plan, quota pill, bar, countdown.
 // A click opens the details under the last timer. Only one card is open.
 @interface TMCardView : NSView

@@ -25,5 +25,6 @@
 + (TMProvider *)parseOllamaBalance:(NSDictionary *)json plan:(NSString *)plan;
 + (TMProvider *)parseClaudeUsage:(NSDictionary *)json plan:(NSString *)plan;
 + (TMProvider *)parseClaudeTUI:(NSString *)text now:(NSDate *)now;
++ (NSString *)claudePlanFromConfig:(NSDictionary *)json;   // ~/.claude.json oauthAccount → "Max 20x" / "Pro"
 + (NSTimeInterval)parseDuration:(NSString *)s;   // "13d 18h 19m" → seconds
 @end

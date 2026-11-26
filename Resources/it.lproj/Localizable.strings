@@ -85,6 +85,8 @@
 "slow down" = "rallenta";
 "today at %@" = "oggi alle %@";
 "tomorrow at %@" = "domani alle %@";
+"%@ today" = "%@ di oggi";
+"%@ tomorrow" = "%@ di domani";
 "tonight at %@" = "stasera alle %@";
 "until the reset" = "fino al reset";
 "± %@ points" = "± %@ punti";
@@ -100,6 +102,11 @@
 "Letters" = "Lettere";
 "Logos" = "Loghi";
 "Menu bar" = "Barra dei menu";
+"Customize" = "Personalizza";
+"Title" = "Titolo";
+"Logo" = "Logo";
+"Name" = "Nome";
+"Plan" = "Piano";
 "Monthly" = "Mensile";
 "Not connected" = "Non collegato";
 "Couldn't read usage" = "Lettura fallita";
@@ -111,17 +118,20 @@
 "Weekly" = "Settimanale";
 "stale data" = "dati vecchi";
 
-/* Proposta C — expanded details (moreC) */
+/* Proposta C — expanded details */
 "Now" = "Adesso";
 "Until reset" = "Da qui al reset";
-"Used" = "Usato";
-"Expected" = "Atteso";
-"Ideal pace" = "Ritmo ideale";
-"a day" = "al giorno";
-"an hour" = "all'ora";
-"Projection" = "Proiezione";
-"Reset" = "Reset";
-"runs out in %@" = "finisce tra %@";
-"limit reached" = "limite raggiunto";
 "too early to tell" = "presto per dirlo";
 "at" = "alle";
+"%lds" = "%lds";
+"You've used " = "Hai usato il ";
+"; by now you should be at about " = "; a questo punto dovresti essere intorno al ";
+"At this pace you'll use only " = "Di questo passo userai solo il ";
+" and waste " = " e ne sprecherai il ";
+"At this pace you'll use about " = "Di questo passo userai circa il ";
+"At this pace you'll run out " = "Di questo passo finisci ";
+"Use about " = "Usa in media il ";
+" to reach 100% " = " per arrivare al 100% ";
+"Stay under " = "Non superare il ";
+"Resets " = "Si azzera ";
+"Limit reached." = "Limite raggiunto.";

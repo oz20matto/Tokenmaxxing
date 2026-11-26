@@ -78,6 +78,16 @@ int main(int argc, char **argv) {
             printf("claude tui failed load rejected: %s\n", f.error && !f.windows.count ? "OK" : "FAIL");
             if (!f.error || f.windows.count) return 1;
         }
+        // Plan from ~/.claude.json oauthAccount. /usage no longer prints it; no token in these fields.
+        {
+            NSString *max = [TMReaders claudePlanFromConfig:@{ @"oauthAccount": @{ @"organizationType": @"claude_max", @"organizationRateLimitTier": @"default_claude_max_20x" } }];
+            NSString *pro = [TMReaders claudePlanFromConfig:@{ @"oauthAccount": @{ @"organizationType": @"claude_pro" } }];
+            NSString *miss = [TMReaders claudePlanFromConfig:@{}];
+            NSString *bad = [TMReaders claudePlanFromConfig:@{ @"oauthAccount": @{ @"organizationType": @"team" } }];
+            BOOL ok = [max isEqualToString:@"Max 20x"] && [pro isEqualToString:@"Pro"] && miss == nil && bad == nil;
+            printf("claude plan from config: max=%s pro=%s %s\n", (max ?: @"(nil)").UTF8String, (pro ?: @"(nil)").UTF8String, ok ? "OK" : "FAIL");
+            if (!ok) return 1;
+        }
         if (argc > 2) {
             show([TMReaders parseGrok:[NSString stringWithContentsOfFile:@(argv[1]) encoding:NSUTF8StringEncoding error:nil] now:now]);
             show([TMReaders parseKimi:[NSString stringWithContentsOfFile:@(argv[2]) encoding:NSUTF8StringEncoding error:nil] now:now]);
