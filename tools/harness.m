@@ -1,5 +1,5 @@
 // Renders the same panel and menu bar title as the app to PNG, in light and dark, English and Italian.
-// Also writes panel-<lang>-<mode>-open.png with the Grok card's details open.
+// Also writes panel-<lang>-<mode>-open.png with the Kimi card's details open.
 // Menu-bar-only apps cannot be screenshotted from a script, so this is how the UI is checked
 // before installing.
 // Usage (from the repo folder): tools/bin/harness <output-folder> [--live]
@@ -17,6 +17,7 @@ static NSArray<TMProvider *> *sample(NSDate *now) {
     TMProvider *g = [TMProvider new]; g.key = @"grok"; g.name = @"Grok"; g.plan = @"SuperGrok Heavy";
     g.windows = @[[TMWindow label:@"Week" used:74 reset:[now dateByAddingTimeInterval:9 * 3600] period:7 * 86400 primary:YES]];
     TMProvider *k = [TMProvider new]; k.key = @"kimi"; k.name = @"Kimi"; k.plan = @"Ultra";
+    k.note = [TML(@"Split: ") stringByAppendingString:@"kimi 7% · code 39%"];
     k.windows = @[[TMWindow label:@"Month" used:38 reset:[now dateByAddingTimeInterval:13.7 * 86400] period:30 * 86400 primary:YES],
                   [TMWindow label:@"5 hours" used:0 reset:[now dateByAddingTimeInterval:4 * 3600] period:5 * 3600 primary:NO]];
     // Ultra is weekly only: no 5-hour window.
@@ -100,7 +101,7 @@ int main(int argc, char **argv) {
 
                     TMPanelView *openPanel = [[TMPanelView alloc] initWithFrame:NSMakeRect(0, 0, TM_PANEL_W, 100)];
                     openPanel.appearance = ap;
-                    [openPanel setOpenProviderKey:@"grok"];
+                    [openPanel setOpenProviderKey:@"kimi"];
                     [openPanel showProviders:ps tolerance:10 updatedAt:now busy:NO now:now];
                     NSView *openBg = [[NSView alloc] initWithFrame:openPanel.bounds];
                     openBg.appearance = ap; openBg.wantsLayer = YES;

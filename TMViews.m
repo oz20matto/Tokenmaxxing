@@ -1,9 +1,20 @@
 #import "TMViews.h"
 #import "TMLocale.h"
+#import <CoreText/CoreText.h>
 #include <math.h>
 
 double TMAnimationPhase = 0;
 NSString *const TMMenuBarStyleKey = @"menuBarStyle";
+NSString *const TMShowTitleKey = @"showTitle";
+NSString *const TMCardShowLogoKey = @"cardShowLogo";
+NSString *const TMCardShowNameKey = @"cardShowName";
+NSString *const TMCardShowPlanKey = @"cardShowPlan";
+
+// Unset matches the @YES registered at launch. The harness never calls registerDefaults.
+static BOOL cardShown(NSString *key) {
+    id v = [NSUserDefaults.standardUserDefaults objectForKey:key];
+    return v ? [v boolValue] : YES;
+}
 
 static const CGFloat kPadTop = 14;
 static const CGFloat kPadBot = 12;
@@ -180,6 +191,31 @@ static NSString *dhm(NSTimeInterval sec) {
     return M;
 }
 
+// Details countdown, with seconds. Larger units keep the smaller ones, zeros included
+// ("4h 0m 5s"). Under a minute only the seconds remain ("59s").
+// U+00A0 between units so "(13d 16h 48m 0s)" stays on one line.
+static NSString *dhms(NSTimeInterval sec) {
+    if (sec < 0) sec = 0;
+    long t = (long)sec;
+    long s = t % 60;
+    long m = (t / 60) % 60;
+    long h = (t / 3600) % 24;
+    long d = t / 86400;
+    NSString *S = [NSString stringWithFormat:TML(@"%lds"), s];
+    if (d > 0)
+        return [NSString stringWithFormat:@"%@\u00A0%@\u00A0%@\u00A0%@",
+                [NSString stringWithFormat:TML(@"%ldd"), d],
+                [NSString stringWithFormat:TML(@"%ldh"), h],
+                [NSString stringWithFormat:TML(@"%ldm"), m], S];
+    if (h > 0)
+        return [NSString stringWithFormat:@"%@\u00A0%@\u00A0%@",
+                [NSString stringWithFormat:TML(@"%ldh"), h],
+                [NSString stringWithFormat:TML(@"%ldm"), m], S];
+    if (m > 0)
+        return [NSString stringWithFormat:@"%@\u00A0%@", [NSString stringWithFormat:TML(@"%ldm"), m], S];
+    return S;
+}
+
 static NSTimeInterval windowLeft(TMWindow *w, NSDate *now) {
     if (!w.resetAt || !now) return 0;
     NSTimeInterval left = [w.resetAt timeIntervalSinceDate:now];
@@ -200,39 +236,17 @@ static NSString *clockString(NSDate *d) {
     if (!d) return @"";
     NSDateFormatter *f = [NSDateFormatter new];
     f.locale = TMLocale();
+    f.timeZone = NSTimeZone.localTimeZone;
     [f setLocalizedDateFormatFromTemplate:@"jmm"];
+    f.timeZone = NSTimeZone.localTimeZone;
     return [f stringFromDate:d];
-}
-
-// "stasera alle 21:30", "domani alle 9:00", or "sab 7/12 alle 9:00" (simulation fullDate).
-// Today and tomorrow reuse TMWhen. Later dates keep the weekday, the day and the time.
-static NSString *detailReset(NSDate *d, NSDate *now) {
-    if (!d) return TML(@"Reset time unknown");
-    NSCalendar *cal = NSCalendar.currentCalendar;
-    NSDate *from = [cal startOfDayForDate:now ?: [NSDate date]];
-    NSInteger days = [cal components:NSCalendarUnitDay fromDate:from toDate:[cal startOfDayForDate:d] options:0].day;
-    if (days == 0 || days == 1) return TMWhen(d, now);
-    NSDateFormatter *wd = [NSDateFormatter new];
-    wd.locale = [NSLocale localeWithLocaleIdentifier:TMItalian() ? @"it_IT" : @"en_US"];
-    wd.dateFormat = @"EEE";
-    NSString *week = [[wd stringFromDate:d] stringByReplacingOccurrencesOfString:@"." withString:@""];
-    NSString *day;
-    if (TMItalian()) {
-        NSDateComponents *c = [cal components:NSCalendarUnitDay | NSCalendarUnitMonth fromDate:d];
-        day = [NSString stringWithFormat:@"%ld/%ld", (long)c.day, (long)c.month];
-    } else {
-        NSDateFormatter *f = [NSDateFormatter new];
-        f.locale = TMLocale();
-        [f setLocalizedDateFormatFromTemplate:@"MMMd"];
-        day = [f stringFromDate:d];
-    }
-    return [NSString stringWithFormat:@"%@ %@ %@ %@", week, day, TML(@"at"), clockString(d)];
 }
 
 #pragma mark - SVG path
 
 // Logos are the four files in Resources/logos (claude, kimi, ollama: Simple Icons, CC0;
-// grok: LobeHub Icons, MIT). NSImage does not reliably import SVG on the 13.0 deployment
+// grok: LobeHub Icons, MIT). Titan One: SIL OFL 1.1, Resources/fonts/TitanOne-OFL.txt.
+// NSImage does not reliably import SVG on the 13.0 deployment
 // target, and these marks need even-odd holes, so the path is parsed here.
 //
 // Supported path commands, absolute and relative: M L H V C S Q T A Z.
@@ -739,28 +753,6 @@ static NSDictionary *kvHeadAttrs(void) {
               NSParagraphStyleAttributeName: ps };
 }
 
-static NSDictionary *kvKeyAttrs(void) {
-    return attrs(10.5, NSFontWeightRegular, TMSecondaryTextColor(), YES, NSLineBreakByClipping, NSTextAlignmentLeft);
-}
-
-static NSDictionary *kvValueAttrs(NSColor *c) {
-    return attrs(13, NSFontWeightSemibold, c, YES, NSLineBreakByClipping, NSTextAlignmentLeft);
-}
-
-static NSDictionary *kvDimAttrs(void) {
-    return attrs(10.5, NSFontWeightRegular, TMSecondaryTextColor(), YES, NSLineBreakByClipping, NSTextAlignmentLeft);
-}
-
-static NSDictionary *kvSoftAttrs(void) {
-    return attrs(11.5, NSFontWeightRegular, TMSecondaryTextColor(), YES, NSLineBreakByClipping, NSTextAlignmentLeft);
-}
-
-static NSDictionary *kvChipAttrs(void) {
-    // Dark chip text is the full label so the band stays readable on the 14% wash.
-    NSColor *ink = TMDrawingIsDark() ? NSColor.labelColor : NSColor.secondaryLabelColor;
-    return attrs(10, NSFontWeightMedium, ink, YES, NSLineBreakByClipping, NSTextAlignmentCenter);
-}
-
 static NSDictionary *kvNoteAttrs(NSColor *color, CGFloat size) {
     NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
     ps.lineBreakMode = NSLineBreakByWordWrapping;
@@ -773,114 +765,192 @@ static NSDictionary *kvNoteAttrs(NSColor *color, CGFloat size) {
               NSParagraphStyleAttributeName: ps };
 }
 
-static NSAttributedString *kvAttr(NSString *s, NSDictionary *a) {
-    return [[NSAttributedString alloc] initWithString:s ?: @"" attributes:a];
-}
-
-static void valueMetrics(NSAttributedString *value, NSFont *fallback, CGFloat *ascOut, CGFloat *descOut) {
-    __block CGFloat asc = fallback.ascender, desc = fallback.descender;
-    if (value.length) {
-        [value enumerateAttribute:NSFontAttributeName inRange:NSMakeRange(0, value.length) options:0
-                       usingBlock:^(id font, NSRange range, BOOL *stop) {
-            (void)range; (void)stop;
-            if (![font isKindOfClass:NSFont.class]) return;
-            NSFont *f = font;
-            if (f.ascender > asc) asc = f.ascender;
-            if (f.descender < desc) desc = f.descender;
-        }];
-    }
-    *ascOut = asc;
-    *descOut = desc;
-}
-
-// Label in an 84pt column, value to its right, baselines aligned. Returns the row height.
-static CGFloat drawKVRow(NSString *label, NSAttributedString *value, CGFloat y, CGFloat W, BOOL draw) {
-    NSDictionary *keyA = kvKeyAttrs();
-    NSFont *kf = keyA[NSFontAttributeName];
-    CGFloat asc = 0, desc = 0;
-    valueMetrics(value, kf, &asc, &desc);
-    if (kf.ascender > asc) asc = kf.ascender;
-    if (kf.descender < desc) desc = kf.descender;
-    CGFloat rowH = ceil(asc - desc);
-    NSSize ls = textSize(label, keyA);
-    NSSize vs = value.length ? [value size] : NSZeroSize;
-    if (ls.height > rowH) rowH = ceil(ls.height);
-    if (vs.height > rowH) rowH = ceil(vs.height);
-    if (rowH < 1) rowH = 1;
-    if (!draw) return rowH;
-    drawText(label, keyA, 0, y + asc - kf.ascender, YES);
-    if (value.length) {
-        CGFloat x = 84 + 10;
-        [value drawWithRect:NSMakeRect(x, y, MAX(0, W - x), rowH)
-                    options:NSStringDrawingUsesLineFragmentOrigin context:nil];
-    }
-    return rowH;
-}
-
 static CGFloat drawKVHead(NSString *text, CGFloat y, BOOL draw) {
     if (draw) drawText(text, kvHeadAttrs(), 0, y, YES);
     return 12;
 }
 
-// Expected percent plus the lo–hi chip (simulation .kv-band).
-static CGFloat drawKVExpected(NSString *label, NSString *pct, NSString *band, CGFloat y, CGFloat W, BOOL draw) {
-    NSDictionary *keyA = kvKeyAttrs();
-    NSDictionary *valA = kvValueAttrs(NSColor.labelColor);
-    NSDictionary *chipA = kvChipAttrs();
-    NSFont *kf = keyA[NSFontAttributeName];
-    NSFont *vf = valA[NSFontAttributeName];
-    NSFont *cf = chipA[NSFontAttributeName];
-    NSSize ps = textSize(pct, valA);
-    NSSize bs = textSize(band, chipA);
-    CGFloat chipH = ceil(bs.height) + 2;
-    CGFloat asc = fmax(kf.ascender, fmax(vf.ascender, cf.ascender + 1));
-    CGFloat desc = fmin(kf.descender, fmin(vf.descender, cf.descender - 1));
-    CGFloat rowH = ceil(asc - desc);
-    if (ps.height > rowH) rowH = ceil(ps.height);
-    if (chipH > rowH) rowH = chipH;
-    if (!draw) return rowH;
-    drawText(label, keyA, 0, y + asc - kf.ascender, YES);
-    CGFloat x = 84 + 10;
-    CGFloat pctTop = y + asc - vf.ascender;
-    drawText(pct, valA, x, pctTop, YES);
-    CGFloat chipW = ceil(bs.width) + 10;
-    CGFloat chipTop = pctTop + (ps.height - chipH) / 2.0;
-    if (chipTop < y) chipTop = y;
-    NSRect chip = NSMakeRect(x + ceil(ps.width) + 6, chipTop, chipW, chipH);
-    if (NSMaxX(chip) > W) chip.size.width = MAX(0, W - NSMinX(chip));
-    NSColor *chipBg = TMDrawingIsDark() ? [NSColor.labelColor colorWithAlphaComponent:0.14] : trackColor();
-    fillRound(chip, 4, chipBg);
-    drawText(band, chipA, NSMidX(chip) - bs.width / 2.0, NSMidY(chip) - bs.height / 2.0, YES);
-    return rowH;
+// Defined in TMModel.m. The details box is the only caller.
+NSInteger TMDayDistance(NSDate *d, NSDate *now);
+BOOL TMDayElides(NSDate *d);
+NSString *TMSpokenWhen(NSDate *d, NSDate *now, BOOL withClock);
+
+// Body matches the old row labels (10.5 regular, secondary). Numbers match the old
+// values (13 semibold). One paragraph style so mixed runs wrap as one sentence.
+static NSParagraphStyle *sentenceStyle(void) {
+    static NSParagraphStyle *ps;
+    if (!ps) {
+        NSMutableParagraphStyle *m = [NSMutableParagraphStyle new];
+        m.lineBreakMode = NSLineBreakByWordWrapping;
+        m.alignment = NSTextAlignmentLeft;
+        m.lineSpacing = 1;
+        ps = m;
+    }
+    return ps;
 }
 
-// "a day" once more than two days remain; otherwise "an hour". Same cut as the verdict.
-static NSAttributedString *idealValue(TMVerdict *v) {
-    BOOL daily = v.timeLeft > 2 * 86400;
+static NSDictionary *sentenceBody(void) {
+    return @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightRegular],
+              NSForegroundColorAttributeName: TMSecondaryTextColor(),
+              NSParagraphStyleAttributeName: sentenceStyle() };
+}
+
+static NSDictionary *sentenceValue(NSColor *c) {
+    return @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightSemibold],
+              NSForegroundColorAttributeName: c ?: NSColor.labelColor,
+              NSParagraphStyleAttributeName: sentenceStyle() };
+}
+
+static NSDictionary *sentenceSoft(void) {
+    return @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightRegular],
+              NSForegroundColorAttributeName: TMSecondaryTextColor(),
+              NSParagraphStyleAttributeName: sentenceStyle() };
+}
+
+static void addRun(NSMutableAttributedString *m, NSString *s, NSDictionary *a) {
+    if (s.length) [m appendAttributedString:[[NSAttributedString alloc] initWithString:s attributes:a]];
+}
+
+static CGFloat drawAttr(NSAttributedString *s, CGFloat y, CGFloat w, BOOL draw) {
+    if (!s.length) return 0;
+    NSStringDrawingOptions opt = NSStringDrawingUsesLineFragmentOrigin;
+    CGFloat width = MAX(0, w);
+    NSRect bounds = [s boundingRectWithSize:NSMakeSize(width, CGFLOAT_MAX) options:opt context:nil];
+    CGFloat h = ceil(bounds.size.height);
+    if (h < 1) h = 1;
+    if (draw) [s drawWithRect:NSMakeRect(0, y, width, h) options:opt context:nil];
+    return h;
+}
+
+// Preposition glued to the bold date. Today and tomorrow name the clock
+// first ("by 21:40 today", "entro le 21:40 di oggi"). Later days keep the
+// article, elided in Italian before 1, 8 and 11.
+typedef NS_ENUM(NSInteger, TMDateRole) {
+    TMDateBy,
+    TMDateUntil,
+    TMDateResets,
+    TMDateRunsOut,
+};
+
+static NSString *datePrefix(NSDate *d, NSDate *now, TMDateRole role) {
+    NSInteger days = TMDayDistance(d, now);
+    BOOL relative = days == 0 || days == 1;
+    BOOL el = TMDayElides(d);
+    if (!TMItalian()) {
+        if (relative && (role == TMDateResets || role == TMDateRunsOut)) return @"at ";
+        if (role == TMDateBy) return @"by ";
+        if (role == TMDateUntil) return @"until ";
+        return @"on ";
+    }
+    if (relative) {
+        if (role == TMDateBy) return @"entro le ";
+        if (role == TMDateUntil) return @"fino alle ";
+        return @"alle ";
+    }
+    if (el) {
+        if (role == TMDateBy) return @"entro l'";
+        if (role == TMDateUntil) return @"fino all'";
+        return @"l'";
+    }
+    if (role == TMDateBy) return @"entro il ";
+    if (role == TMDateUntil) return @"fino al ";
+    return @"il ";
+}
+
+static void addCountdown(NSMutableAttributedString *m, NSTimeInterval left) {
+    if (left < 1) return;
+    addRun(m, @" (", sentenceBody());
+    addRun(m, dhms(left), sentenceValue(nil));
+    addRun(m, @")", sentenceBody());
+}
+
+static NSAttributedString *resetSentence(NSDate *reset, NSDate *now, NSTimeInterval left) {
     NSMutableAttributedString *m = [NSMutableAttributedString new];
-    [m appendAttributedString:kvAttr(TMPct(daily ? v.perDay : v.perHour), kvValueAttrs(NSColor.labelColor))];
-    [m appendAttributedString:kvAttr(@" ", kvValueAttrs(NSColor.labelColor))];
-    [m appendAttributedString:kvAttr(TML(daily ? @"a day" : @"an hour"), kvDimAttrs())];
+    if (!reset) {
+        addRun(m, TML(@"Reset time unknown"), sentenceBody());
+        return m;
+    }
+    addRun(m, TML(@"Resets "), sentenceBody());
+    addRun(m, datePrefix(reset, now, TMDateResets), sentenceBody());
+    addRun(m, TMSpokenWhen(reset, now, NO), sentenceValue(nil));
+    addCountdown(m, left);
+    addRun(m, @".", sentenceBody());
     return m;
 }
 
-static NSAttributedString *paceValue(TMWindow *w, TMVerdict *v, TMState st, NSColor *sc, NSDate *now) {
-    if (w.used >= 100) return kvAttr(TML(@"limit reached"), kvValueAttrs(sc));
-    if (st == TMStateOver && v.exhaustAt) {
-        NSString *in = dhm([v.exhaustAt timeIntervalSinceDate:now]);
-        return kvAttr([NSString stringWithFormat:TML(@"runs out in %@"), in], kvValueAttrs(sc));
-    }
-    if (isnan(v.projected)) return kvAttr(TML(@"too early to tell"), kvSoftAttrs());
+// Same day/hour cut as the quota pill: under 24 hours the rate is per hour.
+static NSAttributedString *paceSentence(TMWindow *w, TMVerdict *v, NSDate *now) {
+    NSTimeInterval left = w.resetAt ? windowLeft(w, now) : 0;
+    if (w.used >= 100 || !w.resetAt) return resetSentence(w.resetAt, now, left);
+    BOOL daily = v.timeLeft >= 86400;
+    // U+00A0 between the number and the unit ("4,5% al giorno") so the rate stays whole.
+    NSString *quota = [[NSString stringWithFormat:TML(daily ? @"%@ a day" : @"%@ an hour"),
+                        TMPct(daily ? v.perDay : v.perHour)]
+                       stringByReplacingOccurrencesOfString:@" " withString:@"\u00A0"];
+    BOOL over = v.state == TMStateOver;
     NSMutableAttributedString *m = [NSMutableAttributedString new];
-    NSString *reach = [NSString stringWithFormat:TML(@"~%@"), TMPct(fmin(100, v.projected))];
-    [m appendAttributedString:kvAttr(reach, kvValueAttrs(NSColor.labelColor))];
-    if (v.waste >= 0.5) {
-        [m appendAttributedString:kvAttr(@" ", kvValueAttrs(NSColor.labelColor))];
-        [m appendAttributedString:kvAttr(@"\u00B7", kvDimAttrs())];
-        [m appendAttributedString:kvAttr(@" ", kvValueAttrs(NSColor.labelColor))];
-        NSString *waste = [NSString stringWithFormat:TML(@"\u2212%@"), TMPct(v.waste)];
-        [m appendAttributedString:kvAttr(waste, kvValueAttrs(sc))];
+    addRun(m, TML(over ? @"Stay under " : @"Use about "), sentenceBody());
+    addRun(m, quota, sentenceValue(nil));
+    if (over) {
+        addRun(m, @" ", sentenceBody());
+        addRun(m, datePrefix(w.resetAt, now, TMDateUntil), sentenceBody());
+    } else {
+        addRun(m, TML(@" to reach 100% "), sentenceBody());
+        addRun(m, datePrefix(w.resetAt, now, TMDateBy), sentenceBody());
     }
+    addRun(m, TMSpokenWhen(w.resetAt, now, NO), sentenceValue(nil));
+    addCountdown(m, left);
+    addRun(m, @".", sentenceBody());
+    return m;
+}
+
+static NSAttributedString *projectionSentence(TMWindow *w, TMVerdict *v, TMState st, NSColor *sc, NSDate *now) {
+    NSMutableAttributedString *m = [NSMutableAttributedString new];
+    if (w.used >= 100) {
+        addRun(m, TML(@"Limit reached."), sentenceValue(sc));
+        return m;
+    }
+    // Under 3% elapsed the pace is noise, even when an exhaustion instant exists.
+    if (isnan(v.projected)) {
+        addRun(m, TML(@"too early to tell"), sentenceSoft());
+        return m;
+    }
+    if (st == TMStateOver && v.exhaustAt) {
+        addRun(m, TML(@"At this pace you'll run out "), sentenceBody());
+        addRun(m, datePrefix(v.exhaustAt, now, TMDateRunsOut), sentenceBody());
+        addRun(m, TMSpokenWhen(v.exhaustAt, now, YES), sentenceValue(sc));
+        addRun(m, @".", sentenceBody());
+        return m;
+    }
+    NSString *shown = TMPct(fmin(100, v.projected));
+    if (v.waste >= 0.5) {
+        addRun(m, TML(@"At this pace you'll use only "), sentenceBody());
+        addRun(m, shown, sentenceValue(nil));
+        addRun(m, TML(@" and waste "), sentenceBody());
+        addRun(m, TMPct(v.waste), sentenceValue(sc));
+        addRun(m, @".", sentenceBody());
+        return m;
+    }
+    addRun(m, TML(@"At this pace you'll use about "), sentenceBody());
+    addRun(m, shown, sentenceValue(nil));
+    addRun(m, @".", sentenceBody());
+    return m;
+}
+
+static NSAttributedString *nowSentence(TMWindow *w, TMVerdict *v, BOOL known) {
+    NSMutableAttributedString *m = [NSMutableAttributedString new];
+    addRun(m, TML(@"You've used "), sentenceBody());
+    addRun(m, TMPct(w.used), sentenceValue(nil));
+    if (!known) {
+        addRun(m, @".", sentenceBody());
+        return m;
+    }
+    NSString *band = [NSString stringWithFormat:@"%@\u2013%@", TMPct(v.lo), TMPct(v.hi)];
+    addRun(m, TML(@"; by now you should be at about "), sentenceBody());
+    addRun(m, TMPct(v.expected), sentenceValue(nil));
+    addRun(m, @" (", sentenceBody());
+    addRun(m, band, sentenceValue(nil));
+    addRun(m, @").", sentenceBody());
     return m;
 }
 
@@ -944,9 +1014,7 @@ static NSRect drawFoot(NSString *kind, NSString *countdown, NSColor *cdColor, BO
     NSMutableArray<NSValue *> *_tipRects;
     NSString *_tipSignature;
     NSString *_cachedAdvice;
-    NSString *_cachedReset;
-    CGFloat _cachedDetails;
-    BOOL _cachedAdviceSet, _cachedResetSet, _cachedDetailsSet;
+    BOOL _cachedAdviceSet;
 }
 
 - (BOOL)isFlipped { return YES; }
@@ -1032,7 +1100,10 @@ static NSRect drawFoot(NSString *kind, NSString *countdown, NSColor *cdColor, BO
 
     NSDictionary *nameA = attrs(13, NSFontWeightSemibold, NSColor.labelColor, NO, NSLineBreakByClipping, NSTextAlignmentLeft);
     NSDictionary *planA = attrs(13, NSFontWeightRegular, TMSecondaryTextColor(), NO, NSLineBreakByTruncatingTail, NSTextAlignmentLeft);
-    NSSize nameSz = textSize(p.name, nameA);
+    BOOL showLogo = cardShown(TMCardShowLogoKey);
+    BOOL showName = cardShown(TMCardShowNameKey);
+    BOOL showPlan = cardShown(TMCardShowPlanKey) && p.plan.length;
+    NSSize nameSz = textSize(showName ? p.name : nil, nameA);
     // Stale numbers stay on screen, but they do not support a current verdict.
     BOOL showPill = !stale && v && (st == TMStateUnder || st == TMStateOk || st == TMStateOver);
     NSString *quota = showPill ? quotaString(v) : nil;
@@ -1065,21 +1136,35 @@ static NSRect drawFoot(NSString *kind, NSString *countdown, NSColor *cdColor, BO
         right -= ceil(flagSz.width);
         flagRect = NSMakeRect(right, y, ceil(flagSz.width), kRowH);
     }
-    CGFloat nameX = kLogo + 6;
-    CGFloat planX = nameX + ceil(nameSz.width) + 6;
+    // 6pt only between pieces that are actually drawn. An empty left side is fine.
+    CGFloat x = 0;
+    if (showLogo) x = kLogo;
+    CGFloat nameX = 0;
+    if (showName) {
+        if (x > 0) x += 6;
+        nameX = x;
+        x += ceil(nameSz.width);
+    }
+    CGFloat planX = 0;
+    if (showPlan) {
+        if (x > 0) x += 6;
+        planX = x;
+    }
     CGFloat planMax = right - 6 - planX;
     if (draw) {
-        NSBezierPath *mark = logoPath(p.key);
-        NSRect logoR = NSMakeRect(0, y + (kRowH - kLogo) / 2.0, kLogo, kLogo);
-        if (mark) fillLogo(mark, logoR, NSColor.labelColor);
-        else if (p.name.length) {
-            NSDictionary *la = attrs(11, NSFontWeightBold, NSColor.labelColor, NO, NSLineBreakByClipping, NSTextAlignmentCenter);
-            NSString *letter = [p.name substringToIndex:1];
-            NSSize ls = textSize(letter, la);
-            drawText(letter, la, NSMidX(logoR) - ls.width / 2.0, NSMidY(logoR) - ls.height / 2.0, YES);
+        if (showLogo) {
+            NSBezierPath *mark = logoPath(p.key);
+            NSRect logoR = NSMakeRect(0, y + (kRowH - kLogo) / 2.0, kLogo, kLogo);
+            if (mark) fillLogo(mark, logoR, NSColor.labelColor);
+            else if (p.name.length) {
+                NSDictionary *la = attrs(11, NSFontWeightBold, NSColor.labelColor, NO, NSLineBreakByClipping, NSTextAlignmentCenter);
+                NSString *letter = [p.name substringToIndex:1];
+                NSSize ls = textSize(letter, la);
+                drawText(letter, la, NSMidX(logoR) - ls.width / 2.0, NSMidY(logoR) - ls.height / 2.0, YES);
+            }
         }
-        drawText(p.name, nameA, nameX, y + (kRowH - nameSz.height) / 2.0, YES);
-        if (p.plan.length && planMax > 8) {
+        if (showName) drawText(p.name, nameA, nameX, y + (kRowH - nameSz.height) / 2.0, YES);
+        if (showPlan && planMax > 8) {
             NSSize psz = textSize(p.plan, planA);
             [p.plan drawWithRect:NSMakeRect(planX, y + (kRowH - psz.height) / 2.0, planMax, psz.height)
                          options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
@@ -1167,11 +1252,6 @@ static NSRect drawFoot(NSString *kind, NSString *countdown, NSColor *cdColor, BO
         if (pw.resetAt) [self noteTip:[NSString stringWithFormat:TML(@"Resets %@"), TMWhen(pw.resetAt, now)] rect:tip draw:draw];
     }
     y += footH;
-    // Provider note (Kimi's kimi/code split). Nothing is added when it is empty.
-    if (p.note.length) {
-        y += 4;
-        y += drawWrapped(p.note, kvNoteAttrs(TMSecondaryTextColor(), 11), 0, y, W, draw);
-    }
     if (self.expanded && v)
         y += [self appendDetailsAtY:y width:W provider:p window:pw verdict:v state:st color:sc now:now draw:draw];
     y += kPadBot;
@@ -1362,15 +1442,8 @@ static NSRect drawFoot(NSString *kind, NSString *countdown, NSColor *cdColor, BO
     return _cachedAdvice;
 }
 
-- (NSString *)resetLineFor:(NSDate *)reset now:(NSDate *)now {
-    if (_cachedResetSet) return _cachedReset;
-    _cachedResetSet = YES;
-    _cachedReset = [detailReset(reset, now) copy];
-    return _cachedReset;
-}
-
-// Inner rows of the details box, in content coordinates. Returns the content height (no padding).
-// Kimi's 5-hour window is the ring in the foot row. moreC does not add a second note for it.
+// Sentences inside the details box. Returns the content height (no padding).
+// Kimi's 5-hour window stays the ring in the foot row. The provider note, if any, is last.
 - (CGFloat)layoutDetailsContentAtY:(CGFloat)y width:(CGFloat)W provider:(TMProvider *)p
                             window:(TMWindow *)w verdict:(TMVerdict *)v state:(TMState)st
                              color:(NSColor *)sc now:(NSDate *)now draw:(BOOL)draw {
@@ -1380,24 +1453,23 @@ static NSRect drawFoot(NSString *kind, NSString *countdown, NSColor *cdColor, BO
     NSLocale *loc = TMLocale();
     y += drawKVHead([TML(@"Now") uppercaseStringWithLocale:loc], y, draw);
     y += 3;
-    y += drawKVRow(TML(@"Used"), kvAttr(TMPct(w.used), kvValueAttrs(NSColor.labelColor)), y, W, draw);
-    if (known) {
-        y += 3;
-        NSString *band = [NSString stringWithFormat:@"%@\u2013%@", TMPct(v.lo), TMPct(v.hi)];
-        y += drawKVExpected(TML(@"Expected"), TMPct(v.expected), band, y, W, draw);
-    }
+    y += drawAttr(nowSentence(w, v, known), y, W, draw);
     y += 8;
     y += drawKVHead([TML(@"Until reset") uppercaseStringWithLocale:loc], y, draw);
-    if (known) {
-        if (w.used < 100) {
-            y += 3;
-            y += drawKVRow(TML(@"Ideal pace"), idealValue(v), y, W, draw);
-        }
-        y += 3;
-        y += drawKVRow(TML(@"Projection"), paceValue(w, v, st, sc, now), y, W, draw);
-    }
     y += 3;
-    y += drawKVRow(TML(@"Reset"), kvAttr([self resetLineFor:w.resetAt now:now], kvValueAttrs(NSColor.labelColor)), y, W, draw);
+    if (known) {
+        y += drawAttr(projectionSentence(w, v, st, sc, now), y, W, draw);
+        y += 6;
+        y += drawAttr(paceSentence(w, v, now), y, W, draw);
+    } else if (w.resetAt && now && [w.resetAt timeIntervalSinceDate:now] <= 0) {
+        // Already reset: the verdict headline, not a sentence that announces a future reset.
+        NSMutableAttributedString *passed = [NSMutableAttributedString new];
+        addRun(passed, v.headline, sentenceBody());
+        y += drawAttr(passed, y, W, draw);
+    } else {
+        NSTimeInterval left = w.resetAt ? windowLeft(w, now) : 0;
+        y += drawAttr(resetSentence(w.resetAt, now, left), y, W, draw);
+    }
 
     y += 7;
     if (draw) drawHairline(0, y, W, self);
@@ -1414,25 +1486,27 @@ static NSRect drawFoot(NSString *kind, NSString *countdown, NSColor *cdColor, BO
                                     10, textTop, MAX(0, W - 10), draw);
         y += MAX(textH, 8.0);
     }
+    if (p.note.length) {
+        y += 6;
+        y += drawWrapped(p.note, kvNoteAttrs(TMSecondaryTextColor(), 11), 0, y, W, draw);
+    }
     return y - start;
 }
 
 // Margin 10 above the box, then 8pt padding around the rows. Total height added to the card.
+// Measured on every pass so the second countdown and the note share one height.
 - (CGFloat)appendDetailsAtY:(CGFloat)y width:(CGFloat)W provider:(TMProvider *)p
                      window:(TMWindow *)w verdict:(TMVerdict *)v state:(TMState)st
                       color:(NSColor *)sc now:(NSDate *)now draw:(BOOL)draw {
-    if (!_cachedDetailsSet) {
-        _cachedDetails = [self layoutDetailsContentAtY:0 width:W provider:p window:w verdict:v
-                                                 state:st color:sc now:now draw:NO];
-        _cachedDetailsSet = YES;
-    }
+    CGFloat h = [self layoutDetailsContentAtY:0 width:W provider:p window:w verdict:v
+                                        state:st color:sc now:now draw:NO];
     if (draw) {
-        fillRound(NSMakeRect(-8, y + 10, W + 16, _cachedDetails + 16), 8,
+        fillRound(NSMakeRect(-8, y + 10, W + 16, h + 16), 8,
                   [NSColor.labelColor colorWithAlphaComponent:TMDrawingIsDark() ? 0.05 : 0.04]);
         [self layoutDetailsContentAtY:y + 18 width:W provider:p window:w verdict:v
                                 state:st color:sc now:now draw:YES];
     }
-    return 10 + _cachedDetails + 16;
+    return 10 + h + 16;
 }
 
 @end
@@ -1440,6 +1514,41 @@ static NSRect drawFoot(NSString *kind, NSString *countdown, NSColor *cdColor, BO
 #pragma mark - Panel
 
 #define MARGIN 16.0
+
+// Titan One is bundled, not installed. Once per process; a repeat registration is ignored.
+static void registerTitanOne(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *path = nil;
+        NSString *dir = TMResourceDirectory();
+        if (dir.length) {
+            NSString *candidate = [[dir stringByAppendingPathComponent:@"fonts"]
+                                   stringByAppendingPathComponent:@"TitanOne-Regular.ttf"];
+            if ([NSFileManager.defaultManager fileExistsAtPath:candidate]) path = candidate;
+        }
+        if (!path.length)
+            path = [NSBundle.mainBundle pathForResource:@"TitanOne-Regular" ofType:@"ttf" inDirectory:@"fonts"];
+        if (!path.length) return;
+        CTFontManagerRegisterFontsForURL((__bridge CFURLRef)[NSURL fileURLWithPath:path],
+                                         kCTFontManagerScopeProcess, NULL);
+    });
+}
+
+static NSAttributedString *panelTitle(void) {
+    registerTitanOne();
+    NSFont *font = [NSFont fontWithName:@"TitanOne" size:14];
+    if (!font) {
+        NSFont *system = [NSFont systemFontOfSize:12.5 weight:NSFontWeightSemibold];
+        NSFontDescriptor *rounded = [system.fontDescriptor fontDescriptorWithDesign:NSFontDescriptorSystemDesignRounded];
+        font = rounded ? [NSFont fontWithDescriptor:rounded size:12.5] : nil;
+        if (!font) font = system;
+    }
+    return [[NSAttributedString alloc] initWithString:@"TOKENMAXXING" attributes:@{
+        NSFontAttributeName: font,
+        NSKernAttributeName: @1.0,
+        NSForegroundColorAttributeName: [NSColor.labelColor colorWithAlphaComponent:0.16],
+    }];
+}
 
 static NSButton *iconButton(NSString *symbol, NSString *tip) {
     NSImage *img = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:tip];
@@ -1458,7 +1567,7 @@ static NSButton *iconButton(NSString *symbol, NSString *tip) {
     NSMutableArray<NSView *> *_dynamic;
     NSTextField *_title, *_subtitle;
     NSButton *_gear, *_refresh;
-    NSTimer *_anim;
+    NSTimer *_anim, *_clock;
     CGFloat _ruleY;
     NSArray<TMProvider *> *_shown;
     double _tol;
@@ -1475,6 +1584,7 @@ static NSButton *iconButton(NSString *symbol, NSString *tip) {
     BOOL dark = TMAppearanceIsDark(self.effectiveAppearance);
     NSColor *secondary = dark ? [NSColor colorWithSRGBRed:1 green:1 blue:1 alpha:0.62]
                               : NSColor.secondaryLabelColor;
+    _title.attributedStringValue = panelTitle();
     _subtitle.textColor = secondary;
     _gear.contentTintColor = secondary;
     _refresh.contentTintColor = secondary;
@@ -1483,6 +1593,7 @@ static NSButton *iconButton(NSString *symbol, NSString *tip) {
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     [self applyControlColors];
+    [self updateDetailClock];
 }
 
 - (void)viewDidChangeEffectiveAppearance {
@@ -1495,8 +1606,7 @@ static NSButton *iconButton(NSString *symbol, NSString *tip) {
 - (instancetype)initWithFrame:(NSRect)f {
     if ((self = [super initWithFrame:f])) {
         _dynamic = [NSMutableArray new];
-        _title = [NSTextField labelWithString:@"Tokenmaxxing"];
-        _title.font = [NSFont systemFontOfSize:14 weight:NSFontWeightBold];
+        _title = [NSTextField labelWithString:@""];
         _subtitle = [NSTextField labelWithString:@""];
         _subtitle.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
         _subtitle.textColor = NSColor.secondaryLabelColor;
@@ -1511,7 +1621,63 @@ static NSButton *iconButton(NSString *symbol, NSString *tip) {
     return self;
 }
 
-- (void)dealloc { [_anim invalidate]; }
+- (void)dealloc {
+    [_anim invalidate];
+    [_clock invalidate];
+}
+
+// The emoji timer redraws while the popover is open, but it does not advance `now`,
+// and it stays off when Reduce Motion is on. The details countdown needs a real
+// second. Run it only while a card is open and the popover window is on screen.
+- (void)stopDetailClock {
+    [_clock invalidate];
+    _clock = nil;
+}
+
+- (void)tickOpenDetails {
+    if (!_openProviderKey.length || !self.window.isVisible) {
+        [self stopDetailClock];
+        return;
+    }
+    TMCardView *open = nil;
+    for (NSView *v in _dynamic) {
+        if (![v isKindOfClass:TMCardView.class]) continue;
+        TMCardView *c = (TMCardView *)v;
+        if (!c.expanded) continue;
+        open = c;
+        break;
+    }
+    if (!open) {
+        [self stopDetailClock];
+        return;
+    }
+    NSDate *now = [NSDate date];
+    CGFloat before = NSHeight(open.frame);
+    open.now = now;
+    CGFloat h = [open heightForWidth:TM_PANEL_W - 2 * MARGIN];
+    CGFloat delta = h - before;
+    if (delta > 0.5 || delta < -0.5) {
+        [self showProviders:_shown tolerance:_tol updatedAt:_updated busy:_busy now:now];
+        return;
+    }
+    [open setNeedsDisplay:YES];
+}
+
+- (void)updateDetailClock {
+    BOOL want = _openProviderKey.length > 0 && self.window.isVisible;
+    if (!want) {
+        [self stopDetailClock];
+        return;
+    }
+    if (_clock) return;
+    __weak TMPanelView *weakSelf = self;
+    _clock = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+        (void)t;
+        [weakSelf tickOpenDetails];
+    }];
+    _clock.tolerance = 0.02;
+    [NSRunLoop.mainRunLoop addTimer:_clock forMode:NSRunLoopCommonModes];
+}
 
 - (void)drawRect:(NSRect)dirty {
     (void)dirty;
@@ -1521,15 +1687,18 @@ static NSButton *iconButton(NSString *symbol, NSString *tip) {
 - (void)setAnimating:(BOOL)on {
     [_anim invalidate];
     _anim = nil;
-    if (!on || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) return;
-    __weak TMPanelView *weakSelf = self;
-    _anim = [NSTimer scheduledTimerWithTimeInterval:1.0 / 20 repeats:YES block:^(NSTimer *t) {
-        (void)t;
-        TMAnimationPhase += 1.0 / 20;
-        for (NSView *v in weakSelf.subviews)
-            if ([v isKindOfClass:TMCardView.class]) [v setNeedsDisplay:YES];
-    }];
-    _anim.tolerance = 0.01;
+    if (on && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+        __weak TMPanelView *weakSelf = self;
+        _anim = [NSTimer scheduledTimerWithTimeInterval:1.0 / 20 repeats:YES block:^(NSTimer *t) {
+            (void)t;
+            TMAnimationPhase += 1.0 / 20;
+            for (NSView *v in weakSelf.subviews)
+                if ([v isKindOfClass:TMCardView.class]) [v setNeedsDisplay:YES];
+        }];
+        _anim.tolerance = 0.01;
+    }
+    if (on) [self updateDetailClock];
+    else [self stopDetailClock];
 }
 
 - (void)setOpenProviderKey:(NSString *)key {
@@ -1564,12 +1733,18 @@ static NSButton *iconButton(NSString *symbol, NSString *tip) {
         : updated ? [NSString stringWithFormat:@"%@ \u00B7 \u00B1%.0f", clockString(updated), tol]
                   : TML(@"No reading yet");
     _subtitle.stringValue = meta;
-    CGFloat titleW = ceil([@"Tokenmaxxing" sizeWithAttributes:@{ NSFontAttributeName: _title.font }].width) + 4;
-    _title.frame = NSMakeRect(MARGIN, y + 2, titleW, 20);
+    NSAttributedString *title = panelTitle();
+    _title.attributedStringValue = title;
+    BOOL showTitle = cardShown(TMShowTitleKey);
+    _title.hidden = !showTitle;
+    CGFloat titleW = ceil(title.size.width) + 4;
+    CGFloat titleH = ceil(title.size.height);
+    if (titleH < 20) titleH = 20;
+    _title.frame = NSMakeRect(MARGIN, y + (24.0 - titleH) / 2.0, titleW, titleH);
     // Refresh first, settings on the trailing edge (simulation: ↻ then ⚙︎).
     _gear.frame = NSMakeRect(MARGIN + width - 24, y, 24, 24);
     _refresh.frame = NSMakeRect(NSMinX(_gear.frame) - 6 - 24, y, 24, 24);
-    CGFloat metaX = NSMaxX(_title.frame) + 8;
+    CGFloat metaX = showTitle ? NSMaxX(_title.frame) + 8 : MARGIN;
     CGFloat metaR = NSMinX(_refresh.frame) - 6;
     _subtitle.frame = NSMakeRect(metaX, y + 4, MAX(0, metaR - metaX), 16);
     y += 24 + 8;
@@ -1596,6 +1771,7 @@ static NSButton *iconButton(NSString *symbol, NSString *tip) {
     [self setFrameSize:NSMakeSize(TM_PANEL_W, y)];
     [self setNeedsDisplay:YES];
     if (self.onContentSizeChange) self.onContentSizeChange(self.frame.size);
+    [self updateDetailClock];
 }
 
 @end

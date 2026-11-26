@@ -6,6 +6,10 @@
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 static const NSTimeInterval kDay = 86400, kHour = 3600;
 
@@ -135,10 +139,12 @@ static NSString *readTUI(NSString *path, NSArray<NSString *> *args, NSTimeInterv
     return stripANSI(buf);
 }
 
-static NSDictionary *httpJSON(NSString *method, NSString *url, NSDictionary *headers, NSData *body, NSInteger *status) {
+// `timeout` is the request limit. `extra` is how long the semaphore waits past it
+// (the old 15/20 split uses 5; the headless fallback uses 0.5).
+static NSDictionary *httpJSONTimeout(NSString *method, NSString *url, NSDictionary *headers, NSData *body, NSInteger *status, NSTimeInterval timeout, NSTimeInterval extra) {
     NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
     r.HTTPMethod = method;
-    r.timeoutInterval = 15;
+    r.timeoutInterval = timeout;
     r.HTTPBody = body;
     [headers enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *stop) { [r setValue:v forHTTPHeaderField:k]; }];
     __block NSData *data = nil; __block NSInteger code = 0;
@@ -149,21 +155,35 @@ static NSDictionary *httpJSON(NSString *method, NSString *url, NSDictionary *hea
         data = d; code = [(NSHTTPURLResponse *)resp statusCode];
         dispatch_semaphore_signal(sem);
     }] resume];
-    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC));
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)((timeout + extra) * NSEC_PER_SEC)));
     [s finishTasksAndInvalidate];
     if (status) *status = code;
     id j = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     return [j isKindOfClass:NSDictionary.class] ? j : nil;
 }
 
+static NSDictionary *httpJSON(NSString *method, NSString *url, NSDictionary *headers, NSData *body, NSInteger *status) {
+    return httpJSONTimeout(method, url, headers, body, status, 15, 5);
+}
+
 static NSDate *isoDate(id v) {
     if (![v isKindOfClass:NSString.class]) return nil;
+    // Z and ±hhmm are absolute. A colon in the offset (±hh:mm) is a separate flag,
+    // and fractional seconds are too: try each mix. A string with no zone is left
+    // unparsed — these APIs send a zone, and a bare timestamp is not assumed UTC.
+    NSISO8601DateFormatOptions zone = NSISO8601DateFormatWithInternetDateTime;
+    NSISO8601DateFormatOptions frac = NSISO8601DateFormatWithFractionalSeconds;
+    NSISO8601DateFormatOptions colon = NSISO8601DateFormatWithColonSeparatorInTimeZone;
+    NSISO8601DateFormatOptions sets[] = {
+        zone | frac, zone | frac | colon, zone, zone | colon,
+    };
     NSISO8601DateFormatter *f = [NSISO8601DateFormatter new];
-    f.formatOptions = NSISO8601DateFormatWithInternetDateTime | NSISO8601DateFormatWithFractionalSeconds;
-    NSDate *d = [f dateFromString:v];
-    if (d) return d;
-    f.formatOptions = NSISO8601DateFormatWithInternetDateTime;
-    return [f dateFromString:v];
+    for (NSUInteger i = 0; i < sizeof sets / sizeof sets[0]; i++) {
+        f.formatOptions = sets[i];
+        NSDate *d = [f dateFromString:v];
+        if (d) return d;
+    }
+    return nil;
 }
 
 // A JSON number inside [lo, hi], or nil when it is missing, null, not finite, or out of range.
@@ -278,6 +298,155 @@ static TMWindow *kimiWindow(NSString *text, NSString *title, NSString *label, NS
 
 #pragma mark Ollama
 
+// $1 is the binary, passed after -c so the path is never interpolated. $PPID is this app.
+// Trap is installed before serve and is a no-op if TERM arrives before the child exists.
+static NSString *const kOllamaWatchdog =
+    @"c=; stop() { if [ -n \"$c\" ]; then kill $c 2>/dev/null; i=0; "
+    @"while kill -0 $c 2>/dev/null && [ $i -lt 20 ]; do sleep 0.1; i=$((i+1)); done; "
+    @"kill -9 $c 2>/dev/null; wait $c 2>/dev/null; fi; exit 0; }; "
+    @"trap stop TERM INT; \"$1\" serve & c=$!; "
+    @"while kill -0 $PPID 2>/dev/null && kill -0 $c 2>/dev/null; do sleep 1; done; stop";
+static NSString *const kOllamaDefaultURL = @"http://127.0.0.1:11434";
+
+static int ollamaFreePort(void) {
+    int port = 0;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+        struct sockaddr_in addr = {
+            .sin_len = sizeof(struct sockaddr_in),
+            .sin_family = AF_INET,
+            .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+        };
+        socklen_t len = sizeof addr;
+        if (bind(fd, (struct sockaddr *)&addr, len) == 0 &&
+            getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
+            port = ntohs(addr.sin_port);
+        close(fd);
+    }
+    return port;
+}
+
+static NSTask *launchOllamaWatchdog(NSString *bin, int port) {
+    NSTask *task = [NSTask new];
+    task.launchPath = @"/bin/sh";
+    task.arguments = @[ @"-c", kOllamaWatchdog, @"ollama-watchdog", bin ];
+    NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
+    env[@"OLLAMA_HOST"] = [NSString stringWithFormat:@"127.0.0.1:%d", port];
+    task.environment = env;
+    NSFileHandle *devNull = NSFileHandle.fileHandleWithNullDevice;
+    task.standardOutput = devNull;
+    task.standardError = devNull;
+    task.standardInput = devNull;
+    @try {
+        [task launch];
+    } @catch (NSException *ex) {
+        (void)ex;
+        return nil;
+    }
+    return task;
+}
+
+static void stopOllamaTask(NSTask *task) {
+    if (!task) return;
+    // terminate raises when the task has already exited.
+    @try { [task terminate]; } @catch (NSException *ex) { (void)ex; }
+    NSDate *killAfter = [NSDate dateWithTimeIntervalSinceNow:4];
+    while (task.isRunning) {
+        NSTimeInterval left = [killAfter timeIntervalSinceNow];
+        if (left <= 0) break;
+        usleep((useconds_t)((left < 0.1 ? left : 0.1) * 1000000.0));
+    }
+    // The shell kills the server itself (TERM, up to ~2 s, then SIGKILL).
+    // SIGKILL the shell only after 4 s, so that escalation can finish.
+    if (task.isRunning && task.processIdentifier > 0) kill(task.processIdentifier, SIGKILL);
+    [task waitUntilExit];
+}
+
+// The Ollama app is often closed after a reboot (its login item is off).
+// Start its bundled server on a free side port so it never clashes with the
+// user's own Ollama, read once, then stop it. No window. sh watches this
+// process and kills the server if we crash or are force-quit.
+static TMProvider *ollamaHeadlessRead(void) {
+    // Fixed paths only: test-logic links this file with Foundation, not AppKit.
+    NSString *bin = nil;
+    for (NSString *p in @[ @"/Applications/Ollama.app/Contents/Resources/ollama",
+                           [@"~/Applications/Ollama.app/Contents/Resources/ollama" stringByExpandingTildeInPath] ])
+        if ([NSFileManager.defaultManager isExecutableFileAtPath:p]) { bin = p; break; }
+    if (!bin) return failed(@"ollama", @"Ollama", TML(@"Ollama is not running"));
+
+    TMProvider *out = failed(@"ollama", @"Ollama", TML(@"Ollama is not running"));
+    NSURLSession *session = nil;
+    NSTask *task = nil;
+    @try {
+        session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
+        // One budget from the launch: probe, a single new port, /api/balance, /api/me.
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:20];
+        BOOL up = NO;
+        NSString *base = nil;
+        for (int attempt = 0; attempt < 2 && !up; attempt++) {
+            if ([deadline timeIntervalSinceNow] <= 0) break;
+            if (task) { stopOllamaTask(task); task = nil; }
+            int port = ollamaFreePort();
+            if (port <= 0) break;
+            task = launchOllamaWatchdog(bin, port);
+            if (!task) break;
+            base = [NSString stringWithFormat:@"http://127.0.0.1:%d", port];
+            while (task.isRunning && [deadline timeIntervalSinceNow] > 0) {
+                NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:
+                    [NSURL URLWithString:[base stringByAppendingString:@"/api/version"]]];
+                r.HTTPMethod = @"GET";
+                r.timeoutInterval = 0.4;
+                __block NSInteger ver = 0;
+                dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+                NSURLSessionDataTask *probe = [session dataTaskWithRequest:r completionHandler:^(NSData *d, NSURLResponse *resp, NSError *e) {
+                    ver = [(NSHTTPURLResponse *)resp statusCode];
+                    dispatch_semaphore_signal(sem);
+                }];
+                [probe resume];
+                NSTimeInterval left = [deadline timeIntervalSinceNow];
+                if (left < 0) left = 0;
+                long probeWait = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)((left < 0.5 ? left : 0.5) * NSEC_PER_SEC)));
+                if (probeWait != 0) {
+                    // The handler can still write ver after a timeout. Do not read it.
+                    [probe cancel];
+                } else if (ver == 200) {
+                    up = YES;
+                    break;
+                }
+                if (!task.isRunning) break;
+                left = [deadline timeIntervalSinceNow];
+                if (left <= 0) break;
+                usleep((useconds_t)((left < 0.25 ? left : 0.25) * 1000000.0));
+            }
+            // Exited before /api/version returned 200: one new port, same budget.
+            if (!up && !task.isRunning && attempt == 0) continue;
+            break;
+        }
+        if (up && task.isRunning) {
+            NSTimeInterval left = [deadline timeIntervalSinceNow];
+            NSInteger code = 0;
+            NSDictionary *bal = nil;
+            if (left > 0)
+                bal = httpJSONTimeout(@"GET", [base stringByAppendingString:@"/api/balance"], nil, nil, &code, left < 10 ? left : 10, 0.5);
+            if (!bal) out = failed(@"ollama", @"Ollama", code ? [NSString stringWithFormat:TML(@"Ollama answered %ld (sign in to ollama.com)"), (long)code]
+                                                             : TML(@"Ollama is not running"));
+            else {
+                left = [deadline timeIntervalSinceNow];
+                // Spent budget: skip /api/me and leave the plan nil.
+                NSDictionary *me = nil;
+                if (left > 0)
+                    me = httpJSONTimeout(@"POST", [base stringByAppendingString:@"/api/me"], nil, nil, NULL, left < 5 ? left : 5, 0.5);
+                id plan = me[@"plan"];
+                out = [TMReaders parseOllamaBalance:bal plan:[plan isKindOfClass:NSString.class] ? plan : nil];
+            }
+        }
+    } @finally {
+        [session invalidateAndCancel];
+        stopOllamaTask(task);
+    }
+    return out;
+}
+
 + (TMProvider *)parseOllamaBalance:(NSDictionary *)json plan:(NSString *)plan {
     NSDictionary *inc = json[@"included"];
     if (![inc isKindOfClass:NSDictionary.class]) return failed(@"ollama", @"Ollama", TML(@"Unrecognized Ollama response"));
@@ -303,11 +472,17 @@ static TMWindow *kimiWindow(NSString *text, NSString *title, NSString *label, NS
 }
 
 + (TMProvider *)readOllama {
-    NSString *base = [NSUserDefaults.standardUserDefaults stringForKey:@"ollamaURL"] ?: @"http://127.0.0.1:11434";
+    NSString *configured = [NSUserDefaults.standardUserDefaults stringForKey:@"ollamaURL"];
+    NSString *base = configured ?: kOllamaDefaultURL;
     NSInteger code = 0;
     NSDictionary *bal = httpJSON(@"GET", [base stringByAppendingString:@"/api/balance"], nil, nil, &code);
-    if (!bal) return failed(@"ollama", @"Ollama", code ? [NSString stringWithFormat:TML(@"Ollama answered %ld (sign in to ollama.com)"), (long)code]
-                                                       : TML(@"Ollama is not running"));
+    // No HTTP response (refused or timed out): the app is closed. A status keeps its message.
+    // Headless start only when ollamaURL is unset or the default.
+    if (!bal && code == 0) {
+        if (!configured || [configured isEqualToString:kOllamaDefaultURL]) return ollamaHeadlessRead();
+        return failed(@"ollama", @"Ollama", TML(@"Ollama is not running"));
+    }
+    if (!bal) return failed(@"ollama", @"Ollama", [NSString stringWithFormat:TML(@"Ollama answered %ld (sign in to ollama.com)"), (long)code]);
     NSDictionary *me = httpJSON(@"POST", [base stringByAppendingString:@"/api/me"], nil, nil, NULL);
     id plan = me[@"plan"];
     return [self parseOllamaBalance:bal plan:[plan isKindOfClass:NSString.class] ? plan : nil];
@@ -329,6 +504,16 @@ static NSString *claudePlanName(NSDictionary *oauth) {
     NSString *tier = [oauth[@"rateLimitTier"] isKindOfClass:NSString.class] ? oauth[@"rateLimitTier"] : @"";
     NSString *mult = firstMatch(tier, @"(\\d+x)", 1);
     return mult ? [NSString stringWithFormat:@"%@ %@", sub.capitalizedString, mult] : sub.capitalizedString;
+}
+
+// oauthAccount.organizationType is "claude_max" / "claude_pro"; the tier ("…20x") may be absent.
++ (NSString *)claudePlanFromConfig:(NSDictionary *)json {
+    NSDictionary *acct = [json[@"oauthAccount"] isKindOfClass:NSDictionary.class] ? json[@"oauthAccount"] : nil;
+    NSString *type = [acct[@"organizationType"] isKindOfClass:NSString.class] ? acct[@"organizationType"] : nil;
+    if (![type hasPrefix:@"claude_"]) return nil;
+    NSString *sub = [type substringFromIndex:[@"claude_" length]];
+    id tier = acct[@"organizationRateLimitTier"];
+    return claudePlanName(@{ @"subscriptionType": sub, @"rateLimitTier": [tier isKindOfClass:NSString.class] ? tier : @"" });
 }
 
 + (TMProvider *)parseClaudeUsage:(NSDictionary *)json plan:(NSString *)plan {
@@ -393,11 +578,13 @@ static NSDate *claudeResetDate(NSString *day, NSString *time, NSString *tzName, 
             d = [f dateFromString:[NSString stringWithFormat:@"%@ %ld %@", day, (long)year + 1, t]];
         return d;
     }
-    // Time only (5-hour window): today at that time, or tomorrow if already past.
+    // Time only (5-hour window): today at that time, or one calendar day later if already past.
+    // A calendar day keeps 01:00 across a spring-forward; 86400 seconds does not.
     f.dateFormat = @"yyyy-MM-dd h:mma";
     NSDateComponents *c = [cal components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:now];
     NSDate *d = [f dateFromString:[NSString stringWithFormat:@"%04ld-%02ld-%02ld %@", (long)c.year, (long)c.month, (long)c.day, t]];
-    if (d && [d compare:now] == NSOrderedAscending) d = [d dateByAddingTimeInterval:86400];
+    if (d && [d compare:now] == NSOrderedAscending)
+        d = [cal dateByAddingUnit:NSCalendarUnitDay value:1 toDate:d options:0];
     return d;
 }
 
@@ -429,6 +616,7 @@ static const NSTimeInterval kClaudeRefreshWait = 6;
                                    period:5 * kHour primary:NO]];
     TMProvider *p = [TMProvider new];
     p.key = @"claude"; p.name = @"Claude"; p.fetchedAt = now; p.windows = ws;
+    // Manual setting only: /usage no longer prints the plan (readClaudeTUI fills an empty one from ~/.claude.json).
     p.plan = [TMPlanAdvisor configuredPlanForKey:@"claude"];
     if (!wr) p.error = TML(@"Claude reset time not readable");
     return p;
@@ -441,7 +629,16 @@ static const NSTimeInterval kClaudeRefreshWait = 6;
     NSString *t = readTUI(path, @[@"--strict-mcp-config", @"--mcp-config", @"{\"mcpServers\":{}}", @"--permission-mode", @"default"],
                           10, @"Current\\s+week[\\s\\S]*?Resets\\s+[A-Z][a-z]{2,8}\\s+\\d{1,2}\\s+at\\s+\\d{1,2}(:\\d{2})?\\s?[ap]m", YES,
                           kClaudeRefreshWait, kClaudeRefreshNote);
-    return [self parseClaudeTUI:t ?: @"" now:[NSDate date]];
+    TMProvider *p = [self parseClaudeTUI:t ?: @"" now:[NSDate date]];
+    if (p.windows.count && !p.plan.length) {
+        NSString *dir = NSProcessInfo.processInfo.environment[@"CLAUDE_CONFIG_DIR"];
+        NSString *cfg = dir.length ? [dir.stringByExpandingTildeInPath stringByAppendingPathComponent:@".claude.json"]
+                                   : [@"~/.claude.json" stringByExpandingTildeInPath];
+        NSData *d = [NSData dataWithContentsOfFile:cfg];
+        id j = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+        if ([j isKindOfClass:NSDictionary.class]) p.plan = [self claudePlanFromConfig:j];
+    }
+    return p;
 }
 
 static BOOL claudeTokenExpired(double expMs) {

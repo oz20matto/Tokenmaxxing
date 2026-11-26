@@ -37,13 +37,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 # -mmacosx-version-min matches LSMinimumSystemVersion (13.0: SMAppService).
-clang "${FLAGS[@]}" -framework Cocoa -framework Security -framework LocalAuthentication -framework ServiceManagement \
+clang "${FLAGS[@]}" -framework Cocoa -framework Security -framework LocalAuthentication -framework ServiceManagement -framework CoreText \
   -o "$MACOS/Tokenmaxxing" "${SRC[@]}"
 rsync -a --delete Resources/ "$RES/"
 
 if [ "$1" = "--harness" ]; then
   mkdir -p tools/bin
-  clang "${FLAGS[@]}" -framework Cocoa -framework Security -framework LocalAuthentication -o tools/bin/harness tools/harness.m TMModel.m TMReaders.m TMViews.m TMLocale.m
+  clang "${FLAGS[@]}" -framework Cocoa -framework Security -framework LocalAuthentication -framework CoreText -o tools/bin/harness tools/harness.m TMModel.m TMReaders.m TMViews.m TMLocale.m
   clang "${FLAGS[@]}" -framework Foundation -framework Security -framework LocalAuthentication -o tools/bin/test-logic tools/test-logic.m TMModel.m TMReaders.m TMLocale.m
   echo "tools in tools/bin"
 fi

@@ -33,6 +33,8 @@ static NSString *enabledKey(NSString *k) { return [@"enabled." stringByAppending
 - (void)applicationDidFinishLaunching:(NSNotification *)n {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     [d registerDefaults:@{ kIntervalKey: @20, kTolKey: @10, TMMenuBarStyleKey: @"logo",
+                           TMShowTitleKey: @YES,
+                           TMCardShowLogoKey: @YES, TMCardShowNameKey: @YES, TMCardShowPlanKey: @YES,
                            enabledKey(@"grok"): @YES, enabledKey(@"kimi"): @YES,
                            enabledKey(@"claude"): @YES, enabledKey(@"ollama"): @YES }];
     TMSetLanguage([d stringForKey:kLanguageKey]);
@@ -227,6 +229,21 @@ static NSString *enabledKey(NSString *k) { return [@"enabled." stringByAppending
     }
     bar.submenu = ms;
 
+    NSMenuItem *header = [menu addItemWithTitle:TML(@"Customize") action:nil keyEquivalent:@""];
+    NSMenu *hs = [NSMenu new];
+    NSMenuItem *titleItem = [hs addItemWithTitle:TML(@"Title") action:@selector(toggleCardHeader:) keyEquivalent:@""];
+    titleItem.target = self; titleItem.representedObject = TMShowTitleKey;
+    titleItem.state = [d boolForKey:TMShowTitleKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    [hs addItem:NSMenuItem.separatorItem];
+    for (NSArray *o in @[ @[TMCardShowLogoKey, TML(@"Logo")],
+                          @[TMCardShowNameKey, TML(@"Name")],
+                          @[TMCardShowPlanKey, TML(@"Plan")] ]) {
+        NSMenuItem *it = [hs addItemWithTitle:o[1] action:@selector(toggleCardHeader:) keyEquivalent:@""];
+        it.target = self; it.representedObject = o[0];
+        it.state = [d boolForKey:o[0]] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    header.submenu = hs;
+
     NSMenuItem *cc = [menu addItemWithTitle:TML(@"Connect Claude…") action:@selector(connectClaude:) keyEquivalent:@""];
     cc.target = self; cc.enabled = !self.busy;
     NSMenuItem *plan = [menu addItemWithTitle:TML(@"Set the Kimi plan…") action:@selector(askKimiPlan:) keyEquivalent:@""];
@@ -275,6 +292,13 @@ static NSString *enabledKey(NSString *k) { return [@"enabled." stringByAppending
 
 - (void)setMenuBarStyle:(NSMenuItem *)it {
     [NSUserDefaults.standardUserDefaults setObject:it.representedObject forKey:TMMenuBarStyleKey];
+    [self updateUI];
+}
+
+- (void)toggleCardHeader:(NSMenuItem *)it {
+    NSString *k = it.representedObject;
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    [d setBool:![d boolForKey:k] forKey:k];
     [self updateUI];
 }
 
